@@ -20,7 +20,7 @@
 
 #define SP 60.0				// consigna en rpm
 
-#define TO_RPM 60.0/159.0/0.1		// factor para calcular rpms a partir de cuentas del decoder
+#define TO_RPM 60.0/159.0/0.1		// factor para calcular rpm a partir de cuentas del decoder
 
 /* Definición de los parámetros del PI discreto */
 #define B0 0.005455
@@ -57,8 +57,16 @@ static inline void tsnorm(struct timespec *ts)
 /* Función que se ejecuta cuando se produce un evento en el GPIO_SA */
 void edgeDetected(int gpio, int level, uint32_t tick)
 {
+	int a;
+	a = gpioRead(GPIO_SB);
 	if (level == 1) {
-		encoder_cont++;
+		if (a == 0) {
+			encoder_cont++;
+		}
+		else {
+			encoder_cont--;
+		}
+		printf("%d\n", a);
 	}
 }
 
@@ -101,31 +109,85 @@ void *thread1_control(void *data)
 			clock_nanosleep(0, TIMER_ABSTIME, &t, NULL);
 			
 			/* calcular velocidad a partir del contador del decoder */
+			//printf("%d \n", encoder_cont);
 			encoder_cont_k = encoder_cont;		// copiar cuenta del decoder
 			encoder_cont = 0;			// poner a cero cuenta del decoder
 			rpm = encoder_cont_k*TO_RPM;		// cálculo de RPMs
+			
+			//printf("%d\n", encoder_cont_k);
+			//printf("%f\n", rpm);
+		
 			
 			/* calcular señal de error */
 			ek = SP - rpm;
 			
 			/* calcular señal de control (PID discreto) */
-			uk = B0*ek+B1*ek1+-A1*uk1;
+			uk = B0*ek+B1*ek1-A1*uk1;
 			
-			/* saturar uk y aplicar zona muerta en torno a 0.0 */
-			if (uk > 6.0) {
-				uk_sat_dz = 6.0;
-			}
-			else if (uk < 0.2) {
+			/* aplicar zona muerta al pasar de uk positivo a negativo */
+			/* saturar si abs(uk) > 6.0 */
+			if (uk > 0.0 && uk1 < 0.0) {
 				uk_sat_dz = 0.0;
 			}
+			else if (uk < 0.0 && uk1 > 0.0) {
+				uk_sat_dz = 0.0;
+			}
+			else if (uk >= 6.0) {
+				uk_sat_dz = 6.0;
+				dir = 1;
+			}
+			else if (uk <= -6.0) {
+				uk_sat_dz = 6.0;
+				dir = 0;
+			}
+			else if (uk >= 0.0) {		// uk positivo
+				uk_sat_dz = uk;
+				dir = 1;
+			}
+			else {				// uk negativo
+				uk_sat_dz = -uk;
+				dir = 0;
+			}
+			
+			
+			/* saturar uk y aplicar zona muerta en torno a 0.0 */
+			//if (uk >= 6.0) {
+				//uk_sat_dz = 6.0;
+				//dir = 1;
+			//}
+			//else if (uk >= 0.0) {
+				//if (uk1 >= 0.0) {		// si uk generada en el periodo anterior es positiva
+					//uk_sat_dz = uk;		// zona lineal, dir se deja a 1
+					//dir = 1;
+				//}
+				//else {				// si uk aplicada en el periodo anterior es negativa
+					//uk_sat_dz = 0.0;	// un periodo de tiempo muerto para evitar cortos
+				//}
+			//}
+			//else if (uk > -6.0) {
+				//if (uk1 <= 0.0) {		// si uk generada en el periodo anterior es negativa
+					//uk_sat_dz = -uk;	// zona lineal, dir se pone a 0
+					//dir = 0;
+				//}
+				//else {
+					//uk_sat_dz = 0.0;	// un periodo de tiempo muerto para evitar cortos
+				//}
+			//}
+			//else {					// uk <= -6.0
+				//uk_sat_dz = 6.0;
+				//dir = 0;
+			//}
+			
+			/* actualizar señal de dirección de PWM */
+			gpioWrite(GPIO_DIR, dir);
 			
 			/* actualizar ciclo de trabajo de la PWM */
 			dc_float = uk_sat_dz / V_DC;		// ciclo de trabajo en tanto por 1
 			dc = (int)(dc_float*1000000.0);		// ciclo de trabajo en tanto por millón
-			gpioHardwarePWM(GPIO_PWM, 10000, dc);		// PWM de 10 kHz en el GPIO18 con ciclo de trabajo dc
+			gpioHardwarePWM(GPIO_PWM, 1000, dc);	// PWM de 10 kHz en el GPIO18 con ciclo de trabajo dc
 			
-			/* actualizar señal de dirección de PWM */
-			gpioWrite(GPIO_DIR, dir);
+			// printf("%d \n", dc);
+			
 			
 			/* registrar señal de control y error */
 			uk1 = uk;
@@ -173,7 +235,7 @@ int main(int argc, char* argv[])
 {
         struct sched_param param;			// crear una estructura de tipo sched_param para configurar las propiedades relacionadas con el scheduler
         pthread_attr_t attr;				// crear un objeto de tipo pthread_attr_t para configurar los atributos del hilo
-        pthread_t thread;
+        pthread_t thread1, thread2;
 	
 	/* Inicializar GPIO */
 	ret = gpioInitialise();
@@ -185,6 +247,14 @@ int main(int argc, char* argv[])
 	
 	/* Configurar GPIO_SA como entrada */
 	ret = gpioSetMode(GPIO_SA, PI_INPUT);
+	if (ret) {
+		printf("Failed to set GPIO pin mode.\n");
+		gpioTerminate();
+		goto out;
+	}
+	
+	/* Configurar GPIO_SB como entrada */
+	ret = gpioSetMode(GPIO_SB, PI_INPUT);
 	if (ret) {
 		printf("Failed to set GPIO pin mode.\n");
 		gpioTerminate();
@@ -245,14 +315,26 @@ int main(int argc, char* argv[])
         }
  
         /* Create a pthread with specified attributes */
-        ret = pthread_create(&thread, &attr, thread1_control, NULL);
+        ret = pthread_create(&thread1, &attr, thread1_control, NULL);
+        if (ret) {
+                printf("create pthread failed\n");
+                goto out;
+        }
+	
+	/* Create a pthread with specified attributes */
+        ret = pthread_create(&thread2, &attr, thread2_encoder, NULL);
         if (ret) {
                 printf("create pthread failed\n");
                 goto out;
         }
  
         /* Join the thread and wait until it is done */
-        ret = pthread_join(thread, NULL);
+        ret = pthread_join(thread1, NULL);
+        if (ret)
+                printf("join pthread failed: %m\n");
+		
+	/* Join the thread and wait until it is done */
+        ret = pthread_join(thread2, NULL);
         if (ret)
                 printf("join pthread failed: %m\n");
  
