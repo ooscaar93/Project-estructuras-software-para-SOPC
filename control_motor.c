@@ -18,7 +18,7 @@
 
 #define V_DC 6.0			// tensión de alimentación del puente en H
 
-#define SP 60.0				// consigna en rpm
+#define SP 100.0				// consigna en rpm
 
 #define TO_RPM 60.0/159.0/0.1		// factor para calcular rpm a partir de cuentas del decoder
 
@@ -36,6 +36,7 @@
 /* Declaración de variables globales */
 int encoder_cont;			// número de vueltas del encoder
 int ret;
+int a_reg, b_reg;			// lecturas previas de las señales del encoder (registradas)
 
 /* using clock_nanosleep of librt */
 extern int clock_nanosleep(clockid_t __clock_id, int __flags,
@@ -58,15 +59,28 @@ static inline void tsnorm(struct timespec *ts)
 void edgeDetected(int gpio, int level, uint32_t tick)
 {
 	int a;
-	a = gpioRead(GPIO_SB);
-	if (level == 1) {
-		if (a == 0) {
-			encoder_cont++;
+	int b;
+	
+	if (level == 1) {			// si el flanco es ascendente
+		a = gpioRead(GPIO_SA);
+		b = gpioRead(GPIO_SB);
+		
+		if (a == a_reg && b == b_reg) {
+			return;
 		}
-		else {
-			encoder_cont--;
+		
+		a_reg = a;
+		b_reg = b;
+		
+		if (a && b) {
+			if (gpio == GPIO_SB) {
+				encoder_cont++;
+			}
+			else {			// gpio == GPIO_SA
+				encoder_cont--;
+			}
 		}
-		printf("%d\n", a);
+		
 	}
 }
 
@@ -113,6 +127,7 @@ void *thread1_control(void *data)
 			encoder_cont_k = encoder_cont;		// copiar cuenta del decoder
 			encoder_cont = 0;			// poner a cero cuenta del decoder
 			rpm = encoder_cont_k*TO_RPM;		// cálculo de RPMs
+			printf("%f\n", rpm);
 			
 			//printf("%d\n", encoder_cont_k);
 			//printf("%f\n", rpm);
@@ -221,8 +236,15 @@ void *thread1_control(void *data)
 void *thread2_encoder(void *data)
 {
 	encoder_cont = 0;	// poner a 0 contador de vueltas
+	a_reg = 1;		// poner 
+	b_reg = 1;
 	/* Set up a callback for GPIO events in GPIO_SA */
 	ret = gpioSetAlertFunc(GPIO_SA, edgeDetected);
+	if (ret) {
+		printf("Failed to set callback function.\n");
+		gpioTerminate();
+	}
+	ret = gpioSetAlertFunc(GPIO_SB, edgeDetected);
 	// GESTIONAR ERROR DEL HILO
 	if (ret) {
 		printf("Failed to set callback function.\n");
