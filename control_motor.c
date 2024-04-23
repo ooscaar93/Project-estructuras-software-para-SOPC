@@ -18,7 +18,7 @@
 
 #define V_DC 6.0			// tensión de alimentación del puente en H
 
-#define SP 100.0				// consigna en rpm
+#define SP 0.0				// consigna en rpm
 
 #define TO_RPM 60.0/159.0/0.1		// factor para calcular rpm a partir de cuentas del decoder
 
@@ -37,11 +37,25 @@
 int encoder_cont;			// número de vueltas del encoder
 int ret;
 int a_reg, b_reg;			// lecturas previas de las señales del encoder (registradas)
+int a = 0;
+int b = 0;
+int c = 0;
+int d = 0;
 
 /* using clock_nanosleep of librt */
 extern int clock_nanosleep(clockid_t __clock_id, int __flags,
       __const struct timespec *__req,
       struct timespec *__rem);
+      
+// a sube 0
+// b sube 1
+// a baja 2
+// b baja 3
+
+// b sube 1
+// a sube 0
+// b baja 3
+// a baja 2
 
 /* the struct timespec consists of nanoseconds and seconds. if the nanoseconds are getting
  * bigger than 1000000000 (= 1 second) the variable containing seconds has to be
@@ -58,30 +72,56 @@ static inline void tsnorm(struct timespec *ts)
 /* Función que se ejecuta cuando se produce un evento en el GPIO_SA */
 void edgeDetected(int gpio, int level, uint32_t tick)
 {
-	int a;
-	int b;
 	
-	if (level == 1) {			// si el flanco es ascendente
-		a = gpioRead(GPIO_SA);
-		b = gpioRead(GPIO_SB);
-		
-		if (a == a_reg && b == b_reg) {
-			return;
+	if (gpio == GPIO_SA) {
+		if (level == 1) {
+			d = 0;
 		}
-		
-		a_reg = a;
-		b_reg = b;
-		
-		if (a && b) {
-			if (gpio == GPIO_SB) {
-				encoder_cont++;
-			}
-			else {			// gpio == GPIO_SA
-				encoder_cont--;
-			}
+		else if (level == 0) {
+			d = 2;
 		}
-		
 	}
+	else {
+		if (level == 1) {
+			d = 1;
+		}
+		else if (level == 0) {
+			d = 3;
+		}
+	}
+	
+	if (a == 0 && b == 1 && c == 2 && d == 3) {
+		encoder_cont--;
+	}
+	else if (a == 1 && b == 0 && c == 3 && d == 2) {
+		encoder_cont++;
+	}
+	
+	a = b;
+	b = c;
+	c = d;
+	
+	//if (level == 1) {			// si el flanco es ascendente
+		//a = gpioRead(GPIO_SA);
+		//b = gpioRead(GPIO_SB);
+		
+		//if (a == a_reg && b == b_reg) {
+			//return;
+		//}
+		
+		//a_reg = a;
+		//b_reg = b;
+		
+		//if (a && b) {
+			//if (gpio == GPIO_SB) {
+				//encoder_cont++;
+			//}
+			//else {			// gpio == GPIO_SA
+				//encoder_cont--;
+			//}
+		//}
+		
+	//}
 }
 
 /* Hilo1: cálculo de la señal de control */
@@ -199,7 +239,7 @@ void *thread1_control(void *data)
 			/* actualizar ciclo de trabajo de la PWM */
 			dc_float = uk_sat_dz / V_DC;		// ciclo de trabajo en tanto por 1
 			dc = (int)(dc_float*1000000.0);		// ciclo de trabajo en tanto por millón
-			gpioHardwarePWM(GPIO_PWM, 1000, dc);	// PWM de 10 kHz en el GPIO18 con ciclo de trabajo dc
+			gpioHardwarePWM(GPIO_PWM, 2000, dc);	// PWM de 10 kHz en el GPIO18 con ciclo de trabajo dc
 			
 			// printf("%d \n", dc);
 			
