@@ -18,9 +18,9 @@
 
 #define V_DC 6.0			// tensión de alimentación del puente en H
 
-#define SP 0.0				// consigna en rpm
+#define SP -60.0			// consigna en rpm
 
-#define TO_RPM 60.0/159.0/0.1		// factor para calcular rpm a partir de cuentas del decoder
+#define TO_RPM 60.0/(159.0*0.1*4.0)	// factor para calcular rpm a partir de cuentas del decoder
 
 /* Definición de los parámetros del PI discreto */
 #define B0 0.005455
@@ -36,26 +36,15 @@
 /* Declaración de variables globales */
 int encoder_cont;			// número de vueltas del encoder
 int ret;
-int a_reg, b_reg;			// lecturas previas de las señales del encoder (registradas)
 int a = 0;
 int b = 0;
-int c = 0;
-int d = 0;
+int estado = 1;				// 4 estados
+int prueba = 0;
 
 /* using clock_nanosleep of librt */
 extern int clock_nanosleep(clockid_t __clock_id, int __flags,
       __const struct timespec *__req,
       struct timespec *__rem);
-      
-// a sube 0
-// b sube 1
-// a baja 2
-// b baja 3
-
-// b sube 1
-// a sube 0
-// b baja 3
-// a baja 2
 
 /* the struct timespec consists of nanoseconds and seconds. if the nanoseconds are getting
  * bigger than 1000000000 (= 1 second) the variable containing seconds has to be
@@ -72,56 +61,71 @@ static inline void tsnorm(struct timespec *ts)
 /* Función que se ejecuta cuando se produce un evento en el GPIO_SA */
 void edgeDetected(int gpio, int level, uint32_t tick)
 {
-	
-	if (gpio == GPIO_SA) {
-		if (level == 1) {
-			d = 0;
+	// actualización del valor de las variables a y b
+	// (asociadas a las formas de onda en SA y SB)
+	if (gpio == GPIO_SA) {		// flanco en SA
+		if (level == 1) {	// flanco ascendente en SA
+			a = 1;
 		}
-		else if (level == 0) {
-			d = 2;
-		}
-	}
-	else {
-		if (level == 1) {
-			d = 1;
-		}
-		else if (level == 0) {
-			d = 3;
+		else if (level == 0) {	// flanco descendente en SA
+			a = 0;
 		}
 	}
-	
-	if (a == 0 && b == 1 && c == 2 && d == 3) {
-		encoder_cont--;
+	else if (gpio == GPIO_SB) {	// flanco en SB				
+		if (level == 1) {	// flanco ascendente en SB
+			b = 1;
+		}
+		else if (level == 0) {	// flanco descendente en SB
+			b = 0;
+		}
 	}
-	else if (a == 1 && b == 0 && c == 3 && d == 2) {
-		encoder_cont++;
+	
+	// máquina de estados para incremento/decremento de encoder_cont
+	// estado (a,b): 1 (0,0), 2 (1,0), 3 (1,1), 4 (0,1)
+	switch (estado) {
+		case 1:					// a == 0, b == 0
+			if (a == 1 && b == 0) {		// si flanco ascendente en a
+				estado = 2;		// --> a == 1, b == 0 (estado 2)
+				encoder_cont--;
+			}
+			else if (a == 0 && b == 1) {	// si flanco ascendente en b
+				estado = 4;		// --> a == 0, b == 1 (estado 4)
+				encoder_cont++;
+			}
+			break;
+		case 2:					// a == 1, b == 0
+			if (a == 1 && b == 1) {		// si flanco ascendente en b
+				estado = 3;		// --> a == 1, b == 1 (estado 3)
+				encoder_cont--;
+			}
+			else if (a == 0 && b == 0) {	// si flanco descendente en a
+				estado = 1;		// --> a == 0, b == 0 (estado 1)
+				encoder_cont++;
+			}
+			break;
+		case 3:					// a == 1, b == 1
+			if (a == 0 && b == 1) {		// si flanco descendente en a
+				estado = 4;		// --> a == 0, b == 1 (estado 4)
+				encoder_cont--;
+			}
+			else if (a == 1 && b == 0) {	// si flanco descendente en b
+				estado = 2;		// --> a == 1, b == 0 (estado 2)
+				encoder_cont++;
+			}
+			break;
+		case 4:					// a == 0, b == 1
+			if (a == 0 && b == 0) {		// si flanco descendente en b
+				estado = 1;		// --> a == 0, b == 0 (estado 1)
+				encoder_cont--;
+			}
+			else if (a == 1 && b == 1) {	// si flanco ascendente en a
+				estado = 3;		// --> a == 1, b == 1 (estado 3)
+				encoder_cont++;
+			}
+			break;
+		
 	}
 	
-	a = b;
-	b = c;
-	c = d;
-	
-	//if (level == 1) {			// si el flanco es ascendente
-		//a = gpioRead(GPIO_SA);
-		//b = gpioRead(GPIO_SB);
-		
-		//if (a == a_reg && b == b_reg) {
-			//return;
-		//}
-		
-		//a_reg = a;
-		//b_reg = b;
-		
-		//if (a && b) {
-			//if (gpio == GPIO_SB) {
-				//encoder_cont++;
-			//}
-			//else {			// gpio == GPIO_SA
-				//encoder_cont--;
-			//}
-		//}
-		
-	//}
 }
 
 /* Hilo1: cálculo de la señal de control */
@@ -163,15 +167,9 @@ void *thread1_control(void *data)
 			clock_nanosleep(0, TIMER_ABSTIME, &t, NULL);
 			
 			/* calcular velocidad a partir del contador del decoder */
-			//printf("%d \n", encoder_cont);
 			encoder_cont_k = encoder_cont;		// copiar cuenta del decoder
 			encoder_cont = 0;			// poner a cero cuenta del decoder
 			rpm = encoder_cont_k*TO_RPM;		// cálculo de RPMs
-			printf("%f\n", rpm);
-			
-			//printf("%d\n", encoder_cont_k);
-			//printf("%f\n", rpm);
-		
 			
 			/* calcular señal de error */
 			ek = SP - rpm;
@@ -204,35 +202,6 @@ void *thread1_control(void *data)
 				dir = 0;
 			}
 			
-			
-			/* saturar uk y aplicar zona muerta en torno a 0.0 */
-			//if (uk >= 6.0) {
-				//uk_sat_dz = 6.0;
-				//dir = 1;
-			//}
-			//else if (uk >= 0.0) {
-				//if (uk1 >= 0.0) {		// si uk generada en el periodo anterior es positiva
-					//uk_sat_dz = uk;		// zona lineal, dir se deja a 1
-					//dir = 1;
-				//}
-				//else {				// si uk aplicada en el periodo anterior es negativa
-					//uk_sat_dz = 0.0;	// un periodo de tiempo muerto para evitar cortos
-				//}
-			//}
-			//else if (uk > -6.0) {
-				//if (uk1 <= 0.0) {		// si uk generada en el periodo anterior es negativa
-					//uk_sat_dz = -uk;	// zona lineal, dir se pone a 0
-					//dir = 0;
-				//}
-				//else {
-					//uk_sat_dz = 0.0;	// un periodo de tiempo muerto para evitar cortos
-				//}
-			//}
-			//else {					// uk <= -6.0
-				//uk_sat_dz = 6.0;
-				//dir = 0;
-			//}
-			
 			/* actualizar señal de dirección de PWM */
 			gpioWrite(GPIO_DIR, dir);
 			
@@ -241,29 +210,9 @@ void *thread1_control(void *data)
 			dc = (int)(dc_float*1000000.0);		// ciclo de trabajo en tanto por millón
 			gpioHardwarePWM(GPIO_PWM, 2000, dc);	// PWM de 10 kHz en el GPIO18 con ciclo de trabajo dc
 			
-			// printf("%d \n", dc);
-			
-			
 			/* registrar señal de control y error */
 			uk1 = uk;
 			ek1 = ek;
-			
-			/* actualizar ciclo de trabajo de PWM según señal de control */
-			//dc_float = uk/max_v;
-			//if (dc_float <= 0.0) {
-				//dc_float = -dc_float;
-				//signo = 1;
-			//}
-			//else {
-				//signo = 0;
-			//}
-			
-			/* pasar a tanto por millón, saturar a ciclo de trabajo 100 % */
-			//if (dc_float >= 1.0) {
-				//dc = 1000000;
-			//else { 
-				//dc = (int)(dc_float*1000000.0);
-			//}
 
 			/* calculate next shot */
 			t.tv_nsec+=TS;
@@ -276,8 +225,6 @@ void *thread1_control(void *data)
 void *thread2_encoder(void *data)
 {
 	encoder_cont = 0;	// poner a 0 contador de vueltas
-	a_reg = 1;		// poner 
-	b_reg = 1;
 	/* Set up a callback for GPIO events in GPIO_SA */
 	ret = gpioSetAlertFunc(GPIO_SA, edgeDetected);
 	if (ret) {
