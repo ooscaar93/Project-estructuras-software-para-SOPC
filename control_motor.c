@@ -1,6 +1,5 @@
 /*                                                                  
- * POSIX Real Time Example
- * using a single pthread as RT thread
+ * DC motor control
  */
  
 #include <limits.h>
@@ -13,16 +12,17 @@
 #include <time.h>
 #include <pigpio.h>
 
+/* Definición de constantes */
 #define NSEC_PER_SEC 1000000000		// número de ns en un seg
 #define TS 100000000			// periodo de muestreo (100 ms, en ns)
 
 #define V_DC 6.0			// tensión de alimentación del puente en H
 
-#define SP -60.0			// consigna en rpm
+#define SP 60.0				// consigna en rpm
 
 #define TO_RPM 60.0/(159.0*0.1*4.0)	// factor para calcular rpm a partir de cuentas del decoder
 
-/* Definición de los parámetros del PI discreto */
+/* Definición de los parámetros del PI discreto: uk = B0*ek+B1*ek1-A1*uk1 */
 #define B0 0.005455
 #define B1 0.003455
 #define A1 -1.0
@@ -34,12 +34,7 @@
 #define GPIO_SB 23			// entrada GPIO generada por el encoder SB
 
 /* Declaración de variables globales */
-int encoder_cont;			// número de vueltas del encoder
-int ret;
-int a = 0;
-int b = 0;
-int estado = 1;				// 4 estados
-int prueba = 0;
+int encoder_cont;			// número de vueltas del encoder ¿NECESARIO MUTEX?
 
 /* using clock_nanosleep of librt */
 extern int clock_nanosleep(clockid_t __clock_id, int __flags,
@@ -58,9 +53,17 @@ static inline void tsnorm(struct timespec *ts)
    }
 }
 
-/* Función que se ejecuta cuando se produce un evento en el GPIO_SA */
+/* 
+ * Función que se ejecuta cuando se produce un evento en el GPIO_SA o GPIO_SB.
+ * Máquina de estados del decoder en cuadratura.
+ */
 void edgeDetected(int gpio, int level, uint32_t tick)
-{
+{	
+	// declaración de variables estáticas
+	static int a = 0;		// valor de la señal GPIO_SA (disco A del encoder)
+	static int b = 0;		// valor de la señal GPIO_SB (disco B del encoder, en cuadratura con A)
+	static int estado = 1;		// estado actual de la máquina de estados del decoder
+	
 	// actualización del valor de las variables a y b
 	// (asociadas a las formas de onda en SA y SB)
 	if (gpio == GPIO_SA) {		// flanco en SA
@@ -123,7 +126,7 @@ void edgeDetected(int gpio, int level, uint32_t tick)
 				encoder_cont++;
 			}
 			break;
-		
+
 	}
 	
 }
@@ -177,19 +180,18 @@ void *thread1_control(void *data)
 			/* calcular señal de control (PID discreto) */
 			uk = B0*ek+B1*ek1-A1*uk1;
 			
-			/* aplicar zona muerta al pasar de uk positivo a negativo */
-			/* saturar si abs(uk) > 6.0 */
-			if (uk > 0.0 && uk1 < 0.0) {
+			/* aplicar zona muerta, saturación y configurar dirección de la tensión */
+			if (uk > 0.0 && uk1 < 0.0) {		// zona muerta si uk pasa de negativo a positivo
 				uk_sat_dz = 0.0;
 			}
-			else if (uk < 0.0 && uk1 > 0.0) {
+			else if (uk < 0.0 && uk1 > 0.0) {	// zona muerta si uk pasa de positivo a negativo
 				uk_sat_dz = 0.0;
 			}
-			else if (uk >= 6.0) {
+			else if (uk >= 6.0) {		// saturar si uk >= 6.0
 				uk_sat_dz = 6.0;
 				dir = 1;
 			}
-			else if (uk <= -6.0) {
+			else if (uk <= -6.0) {		// saturar si uk <= -6.0
 				uk_sat_dz = 6.0;
 				dir = 0;
 			}
@@ -208,7 +210,7 @@ void *thread1_control(void *data)
 			/* actualizar ciclo de trabajo de la PWM */
 			dc_float = uk_sat_dz / V_DC;		// ciclo de trabajo en tanto por 1
 			dc = (int)(dc_float*1000000.0);		// ciclo de trabajo en tanto por millón
-			gpioHardwarePWM(GPIO_PWM, 2000, dc);	// PWM de 10 kHz en el GPIO18 con ciclo de trabajo dc
+			gpioHardwarePWM(GPIO_PWM, 2000, dc);	// PWM de 10 kHz en el GPIO_PWM con ciclo de trabajo dc
 			
 			/* registrar señal de control y error */
 			uk1 = uk;
@@ -223,35 +225,37 @@ void *thread1_control(void *data)
 
 /* Hilo 2: adquisición de señal del enconder */
 void *thread2_encoder(void *data)
-{
+{	
+	int ret;
 	encoder_cont = 0;	// poner a 0 contador de vueltas
 	/* Set up a callback for GPIO events in GPIO_SA */
 	ret = gpioSetAlertFunc(GPIO_SA, edgeDetected);
 	if (ret) {
 		printf("Failed to set callback function.\n");
 		gpioTerminate();
+		return NULL;
 	}
 	ret = gpioSetAlertFunc(GPIO_SB, edgeDetected);
 	// GESTIONAR ERROR DEL HILO
 	if (ret) {
 		printf("Failed to set callback function.\n");
 		gpioTerminate();
+		return NULL;
 	}
 	
 }
- 
-int main(int argc, char* argv[])
+
+/* Función que realiza la iniciación y configuración de los GPIO para el control del motor */
+int gpio_init()
 {
-        struct sched_param param;			// crear una estructura de tipo sched_param para configurar las propiedades relacionadas con el scheduler
-        pthread_attr_t attr;				// crear un objeto de tipo pthread_attr_t para configurar los atributos del hilo
-        pthread_t thread1, thread2;
+	int ret;					// variable para almacenar retorno de funciones
 	
 	/* Inicializar GPIO */
 	ret = gpioInitialise();
 	if (ret < 0) {
 		printf("Failed to initialize GPIO.\n");
 		gpioTerminate();
-		goto out;
+		return ret;
 	}
 	
 	/* Configurar GPIO_SA como entrada */
@@ -259,7 +263,7 @@ int main(int argc, char* argv[])
 	if (ret) {
 		printf("Failed to set GPIO pin mode.\n");
 		gpioTerminate();
-		goto out;
+		return ret;
 	}
 	
 	/* Configurar GPIO_SB como entrada */
@@ -267,7 +271,7 @@ int main(int argc, char* argv[])
 	if (ret) {
 		printf("Failed to set GPIO pin mode.\n");
 		gpioTerminate();
-		goto out;
+		return ret;
 	}
 	
 	/* Configurar GPIO_DIR como salida */
@@ -275,78 +279,92 @@ int main(int argc, char* argv[])
 	if (ret) {
 		printf("Failed to set GPIO pin mode.\n");
 		gpioTerminate();
-		goto out;
+		return ret;
 	}
+	
+	/* Si todo ha ido correctamente, se retorna 0 */
+	return 0;
+}
  
-        /* Lock memory */
-        /*if(mlockall(MCL_CURRENT|MCL_FUTURE) == -1) {
-                printf("mlockall failed: %m\n");
-                exit(-2);
-        }*/
+int main(int argc, char* argv[])
+{	
+	int ret;					// variable para almacenar retorno de funciones
+        struct sched_param param;			// crear una estructura de tipo sched_param para configurar las propiedades relacionadas con el scheduler
+        pthread_attr_t attr;				// crear un objeto de tipo pthread_attr_t para configurar los atributos del hilo
+        pthread_t thread1, thread2;			// crear dos hilos de tipo pthread_t
+	
+	/* Inicializar y configurar GPIOs */
+	ret = gpio_init();
+	if (ret) {
+		printf("Error when initialising and configuring GPIOs\n");
+		return ret;
+	}
  
         /* Initialize pthread attributes (default values) */
         ret = pthread_attr_init(&attr);		// initializes the thread attributes object pointed to by attr with default attribute values
         if (ret) {
                 printf("init pthread attributes failed\n");
-                goto out;
+                return ret;
         }
  
         /* Set a specific stack size  */
         ret = pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN);
         if (ret) {
-            printf("pthread setstacksize failed\n");
-            goto out;
+		printf("pthread setstacksize failed\n");
+		return ret;
         }
  
         /* Set scheduler policy and priority of pthread */
         ret = pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
         if (ret) {
-                printf("pthread setschedpolicy failed\n");
-                goto out;
+		printf("pthread setschedpolicy failed\n");
+                return ret;
         }
         param.sched_priority = 90;
         ret = pthread_attr_setschedparam(&attr, &param);
         if (ret) {
                 printf("pthread setschedparam failed\n");
-                goto out;
+                return ret;
         }
         ret = pthread_attr_getschedparam(&attr, &param);
 		printf("Param %d", param.sched_priority);
         if (ret) {
                 printf("pthread getschedparam failed\n");
-                goto out;
+                return ret;
         }
         /* Use scheduling parameters of attr */
         ret = pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
         if (ret) {
                 printf("pthread setinheritsched failed\n");
-                goto out;
+                return ret;
         }
  
         /* Create a pthread with specified attributes */
         ret = pthread_create(&thread1, &attr, thread1_control, NULL);
         if (ret) {
                 printf("create pthread failed\n");
-                goto out;
+                return ret;
         }
 	
 	/* Create a pthread with specified attributes */
         ret = pthread_create(&thread2, &attr, thread2_encoder, NULL);
         if (ret) {
                 printf("create pthread failed\n");
-                goto out;
+                return ret;
         }
  
         /* Join the thread and wait until it is done */
         ret = pthread_join(thread1, NULL);
-        if (ret)
+        if (ret) {
                 printf("join pthread failed: %m\n");
+		return ret;
+	}
 		
 	/* Join the thread and wait until it is done */
         ret = pthread_join(thread2, NULL);
-        if (ret)
+        if (ret) {
                 printf("join pthread failed: %m\n");
+	}
  
-out:
-        return ret;
+        return 0;
 }
