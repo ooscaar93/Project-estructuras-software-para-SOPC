@@ -11,6 +11,11 @@
 #include <unistd.h>
 #include <time.h>
 #include <pigpio.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/ioctl.h>
 
 /* Definición de constantes */
 #define NSEC_PER_SEC 1000000000		// número de ns en un seg
@@ -18,7 +23,7 @@
 
 #define V_DC 6.0			// tensión de alimentación del puente en H
 
-#define SP 60.0				// consigna en rpm
+#define SP 80.0				// consigna en rpm
 
 #define TO_RPM 60.0/(159.0*0.1*4.0)	// factor para calcular rpm a partir de cuentas del decoder
 
@@ -35,6 +40,11 @@
 
 /* Declaración de variables globales */
 int encoder_cont;			// número de vueltas del encoder ¿NECESARIO MUTEX?
+
+int server_socket;			// server socket descriptor
+int client_socket;			// client socket descriptor
+struct sockaddr_un server_addr;		// server address
+struct sockaddr_un client_addr;		// client address
 
 /* using clock_nanosleep of librt */
 extern int clock_nanosleep(clockid_t __clock_id, int __flags,
@@ -219,6 +229,18 @@ void *thread1_control(void *data)
 			/* calculate next shot */
 			t.tv_nsec+=TS;
 			tsnorm(&t);
+			
+			// Accept an incoming connection from the client
+			int clen = sizeof(client_addr);	// Get number of bytes of client_addr
+			// accept() takes the server socket as an argument and retrieves the first socket connection in the queue,
+			// creates a new socket for communication with client and returns the file descriptor for that socket
+			client_socket = accept(server_socket, (struct sockaddr *) &client_addr, &clen);
+			if (client_socket >= 0) {	// If connection with client has been established
+				// Write to client
+				write(client_socket, &rpm, sizeof rpm);	// use client socket file descriptor, 1 byte data
+				// Close socket connection to client
+				//close(client_socket);			// use client socket file descriptor
+			}
 		}
         return NULL;
 }
@@ -297,6 +319,52 @@ int main(int argc, char* argv[])
 	ret = gpio_init();
 	if (ret) {
 		printf("Error when initialising and configuring GPIOs\n");
+		return ret;
+	}
+	
+	/* Create socket on server side */
+	
+	// Delete socket file before creating socket
+	remove("./control_socket");
+	
+	// Create socket descriptor for server:
+	// - Socket family AF_UNIX (UNIX Address Family)
+	// - Socket type SOCK_STREAM (end-to-end connection, data is recieved in send order)
+	server_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (server_socket < 0)
+	{
+		perror("socket() failed");
+		return server_socket;
+	}
+	
+	// Set socket to be non-blocking
+	int on = 1;
+	ret = ioctl(server_socket, FIONBIO, (char *)&on);
+	if (ret < 0)
+	{
+		perror("ioctl() failed");
+	      close(server_socket);
+	      return ret;
+	}
+	
+	// Bind socket to a local address on the machine
+	server_addr.sun_family = AF_UNIX;				// Set socket family of server sockaddr structure
+	strcpy(server_addr.sun_path, "./control_socket");	// Set path of server sockaddr structure
+	int slen = sizeof(server_addr);					// Get number of bytes of server_addr
+	ret = bind(server_socket, (struct sockaddr *) &server_addr, slen);	// Bind server_socket to server_addr
+	if (ret < 0)
+	{
+		perror("bind() failed");
+		close(server_socket);
+		return ret;
+	}
+	
+	// Listen for incoming connections to server_socket, with 1 max connection queue
+	ret = listen(server_socket, 1);
+	if (ret < 0)
+	{
+		perror("listen() failed");
+		close(server_socket);
 		return ret;
 	}
  
