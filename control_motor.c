@@ -153,9 +153,15 @@ void *thread1_control(void *data)
 		float rpm;
 
 		/* declaración de las variables del controlador discreto */
-		float ek, ek1;		/* error en k y en k-1 */
-		float uk, uk1;		/* señal de control en k y en k-1 */
-		float uk_sat_dz;	/* señal de control saturada y con zona muerta */
+		float ek, ek1;			// error en k y en k-1
+		float uk, uk1;			// señal de control en k y en k-1
+		float uk_sat_dz;		// señal de control saturada y con zona muerta
+		
+		/* declaración de variables con el número de bytes de algunas variables */
+		int tsec_bytes = sizeof t.tv_sec;	// tamaño en bytes de t.tv_sec
+		int tnsec_bytes = sizeof t.tv_nsec;	// tamaño en bytes de t.tv_nsec
+		int rpm_bytes = sizeof rpm;		// tamaño en bytes de rpm
+		int uk_bytes = sizeof uk;		// tamaño en bytes de uk
 		
 		/* inicialización de ek1 y uk1 con condiciones iniciales nulas */
 		ek1 = 0.0;
@@ -165,9 +171,9 @@ void *thread1_control(void *data)
 		encoder_cont = 0;
 		
 		/* declaración de las variables con el ciclo de trabajo de la PWM */
-		float dc_float;		/* ciclo de trabajo en flotante, entre 0 y 1 */
-		int dc;			/* ciclo de trabajo en entero, tanto por millón */
-		int dir = 1;		/* 0 si uk positivo, 1 si uk negativo */
+		float dc_float;		// ciclo de trabajo en flotante, entre 0 y 1
+		int dc;			// ciclo de trabajo en entero, tanto por millón
+		int dir = 1;		// 0 si uk positivo, 1 si uk negativo
 		
 		/* get current time */
 		clock_gettime(0,&t);
@@ -190,20 +196,20 @@ void *thread1_control(void *data)
 			/* calcular señal de control (PID discreto) */
 			uk = B0*ek+B1*ek1-A1*uk1;
 			
-			/* aplicar zona muerta, saturación y configurar dirección de la tensión */
+			/* aplicar saturación */
+			if (uk > 6.0) {				// si uk > 6 voltios, 6 voltios
+				uk = 6.0;
+			}
+			else if (uk < -6.0) {			// si uk < -6 voltios, -6 voltios
+				uk = -6.0;
+			}
+			
+			/* aplicar zona muerta y configurar dirección de la tensión */
 			if (uk > 0.0 && uk1 < 0.0) {		// zona muerta si uk pasa de negativo a positivo
 				uk_sat_dz = 0.0;
 			}
 			else if (uk < 0.0 && uk1 > 0.0) {	// zona muerta si uk pasa de positivo a negativo
 				uk_sat_dz = 0.0;
-			}
-			else if (uk >= 6.0) {		// saturar si uk >= 6.0
-				uk_sat_dz = 6.0;
-				dir = 1;
-			}
-			else if (uk <= -6.0) {		// saturar si uk <= -6.0
-				uk_sat_dz = 6.0;
-				dir = 0;
 			}
 			else if (uk >= 0.0) {		// uk positivo
 				uk_sat_dz = uk;
@@ -225,10 +231,6 @@ void *thread1_control(void *data)
 			/* registrar señal de control y error */
 			uk1 = uk;
 			ek1 = ek;
-
-			/* calculate next shot */
-			t.tv_nsec+=TS;
-			tsnorm(&t);
 			
 			// Accept an incoming connection from the client
 			int clen = sizeof(client_addr);	// Get number of bytes of client_addr
@@ -237,10 +239,18 @@ void *thread1_control(void *data)
 			client_socket = accept(server_socket, (struct sockaddr *) &client_addr, &clen);
 			if (client_socket >= 0) {	// If connection with client has been established
 				// Write to client
-				write(client_socket, &rpm, sizeof rpm);	// use client socket file descriptor, 1 byte data
+				write(client_socket, &t.tv_sec, tsec_bytes);	// use client socket file descriptor to send t.tv_sec
+				write(client_socket, &t.tv_nsec, tnsec_bytes);	// use client socket file descriptor to send t.tv_nsec
+				write(client_socket, &rpm, rpm_bytes);	// use client socket file descriptor to send rpm
+				write(client_socket, &uk, uk_bytes);	// use client socket file descriptor to send uk
 				// Close socket connection to client
-				//close(client_socket);			// use client socket file descriptor
+				close(client_socket);			// use client socket file descriptor
 			}
+			// If connection from client not available, doesn't send data
+			
+			/* calculate next shot */
+			t.tv_nsec+=TS;
+			tsnorm(&t);
 		}
         return NULL;
 }
