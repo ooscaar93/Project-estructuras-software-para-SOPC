@@ -13,8 +13,17 @@ while True:
 	# Connect to the server
 	client.connect(socket_path)
 	# Receive a response from the server
-	response = client.recv(1024)
-	res = struct.unpack('f',response)[0]
-	print(f'Received response:',res)
+	tsec_rec = client.recv(8)
+	tsec_int = struct.unpack('q', tsec_rec)[0]
+	tnsec_rec = client.recv(8)
+	tnsec_int = struct.unpack('q', tnsec_rec)[0]
+	rpm_rec = client.recv(4)
+	rpm_float = struct.unpack('f', rpm_rec)[0]
+	uk_rec = client.recv(4)
+	uk_float = struct.unpack('f', uk_rec)[0]
+	print(tsec_int)
+	print(tnsec_int)
+	print(f'RPM: ', rpm_float)
+	print(f'uk : ', uk_float)
 	# Close the connection
 	client.close()
