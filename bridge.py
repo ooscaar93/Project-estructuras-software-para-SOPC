@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
+# STILL NEED TO IMPLEMENT AUTOMATIC DESTRUCTION OF PREVIOUSLY OPENED
+# ZMQ SERVICES
+
 from ctypes import *
 import time
 import socket
 import struct
 import os
 import queue
+import zmq
 
 # Declare queue (FIFO) for communication between thread3_client and thread4_zmq_publisher
 fifo = queue.Queue(1000)
@@ -54,63 +58,70 @@ def tsnorm(ts):
         ts.t_sec = ts.t_sec+1
     return ts
 
-# Function associated to client that receives real time data from motor
-# control process (in C, server, thread1_control)
+# Function associated to thread3 (UNIX socket client). This thread receives real time data from motor
+# control process (in C, server, thread1_control) and stores it in a FIFO queue that is afterwards
+# emptied by thread4_zmq_publisher.
 def thread3_client(data):
     # Set the path for the Unix socket
-	socket_path = './control_socket'
+    socket_path = './control_socket'
+    
+    while True:
+        # Create the Unix socket client
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # Connect to the server
+        client.connect(socket_path)
+        # Receive a response from the server
+        tsec_rec = client.recv(8)
+        tsec_int = struct.unpack('q', tsec_rec)[0]
+        tnsec_rec = client.recv(8)
+        tnsec_int = struct.unpack('q', tnsec_rec)[0]
+        rpm_rec = client.recv(4)
+        rpm_float = struct.unpack('f', rpm_rec)[0]
+        uk_rec = client.recv(4)
+        uk_float = struct.unpack('f', uk_rec)[0]
+        data = [tsec_int, tnsec_int, rpm_float, uk_float]
+        if not(fifo.full()):	# si la FIFO no está llena
+            fifo.put(data)
+        client.close()
 
-	while True:
-		# Create the Unix socket client
-		client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-		# Connect to the server
-		client.connect(socket_path)
-		# Receive a response from the server
-		tsec_rec = client.recv(8)
-		tsec_int = struct.unpack('q', tsec_rec)[0]
-		tnsec_rec = client.recv(8)
-		tnsec_int = struct.unpack('q', tnsec_rec)[0]
-		rpm_rec = client.recv(4)
-		rpm_float = struct.unpack('f', rpm_rec)[0]
-		uk_rec = client.recv(4)
-		uk_float = struct.unpack('f', uk_rec)[0]
-		data = [tsec_int, tnsec_int, rpm_float, uk_float]
-		if not(fifo.full()):	# si la FIFO no está llena
-			fifo.put(data)
-		client.close()
-		
+# Function associated to thread4 (ZMQ publisher). This thread gets data from the FIFO queue and
+# sends it to host computer using ZMQ publisher-subscriber paradigm.
 def thread4_zmq_publisher(data):
-	while True:
-		a = 1
-		if not(fifo.empty()):
-			data = fifo.get()
-			print(data[0])
-			print(data[1])
-			print(f'RPM: ', data[2])
-			print(f'uk : ', data[3])
+    context = zmq.Context()
+    zmq_socket = context.socket(zmq.PUB)
+    zmq_socket.bind("tcp://*:5555")
+    while True:
+        a = 1
+        if not(fifo.empty()):
+            data = fifo.get()
+            zmq_socket.send_string(','.join(map(str,data)))
+            #print(data[0])
+            #print(data[1])
+            #print(f'RPM: ', data[2])
+            #print(f'uk : ', data[3])
 
 def main():
  
-	# Create a pthread with specified attributes
+    # Create a pthread with default attributes and parameters (non-RT)
     thread_func_ptr3 = CFUNCTYPE(None, c_void_p)(thread3_client)
     ret = lc.pthread_create(byref(thread3), byref(attr), thread_func_ptr3, None)
     if ret !=0:
         print("create pthread failed\n")
         return ret
-	
-    # Create a pthread with specified attributes
+
+    # Create a pthread with default attributes and parameters (non-RT)
     thread_func_ptr4 = CFUNCTYPE(None, c_void_p)(thread4_zmq_publisher)
     ret = lc.pthread_create(byref(thread4), byref(attr), thread_func_ptr4, None)
     if ret !=0:
         print("create pthread failed\n")
         return ret
-        
+
     # Join the thread and wait until it is done
     ret = lc.pthread_join(thread4, None)
     if ret !=0:
-	    print("join pthread failed: %m\n")
-	    return ret
-
+        print("join pthread failed: %m\n")
+        return ret
+    
     # Join the thread and wait until it is done
     ret = lc.pthread_join(thread3, None)
     if ret !=0:
