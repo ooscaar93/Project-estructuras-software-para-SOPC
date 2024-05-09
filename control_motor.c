@@ -144,115 +144,115 @@ void edgeDetected(int gpio, int level, uint32_t tick)
 /* Hilo1: cálculo de la señal de control */
 void *thread1_control(void *data)
 {		
-		struct timespec t;
-		
-		/* declaración de variable con copia de la cuenta del decoder */
-		int encoder_cont_k;
-		
-		/* declaración de variable con la velocidad del motor en rpm */
-		float rpm;
+	struct timespec t;
+	
+	/* declaración de variable con copia de la cuenta del decoder */
+	int encoder_cont_k;
+	
+	/* declaración de variable con la velocidad del motor en rpm */
+	float rpm;
 
-		/* declaración de las variables del controlador discreto */
-		float ek, ek1;			// error en k y en k-1
-		float uk, uk1;			// señal de control en k y en k-1
-		float uk_sat_dz;		// señal de control saturada y con zona muerta
+	/* declaración de las variables del controlador discreto */
+	float ek, ek1;			// error en k y en k-1
+	float uk, uk1;			// señal de control en k y en k-1
+	float uk_sat_dz;		// señal de control saturada y con zona muerta
+	
+	/* declaración de variables con el número de bytes de algunas variables */
+	int tsec_bytes = sizeof t.tv_sec;	// tamaño en bytes de t.tv_sec
+	int tnsec_bytes = sizeof t.tv_nsec;	// tamaño en bytes de t.tv_nsec
+	int rpm_bytes = sizeof rpm;		// tamaño en bytes de rpm
+	int uk_bytes = sizeof uk;		// tamaño en bytes de uk
+	
+	/* inicialización de ek1 y uk1 con condiciones iniciales nulas */
+	ek1 = 0.0;
+	uk1 = 0.0;
+	
+	/* inicialización de las cuentas del decoder a 0 */
+	encoder_cont = 0;
+	
+	/* declaración de las variables con el ciclo de trabajo de la PWM */
+	float dc_float;		// ciclo de trabajo en flotante, entre 0 y 1
+	int dc;			// ciclo de trabajo en entero, tanto por millón
+	int dir = 1;		// 0 si uk positivo, 1 si uk negativo
+	
+	/* get current time */
+	clock_gettime(0,&t);
+	
+	/* start after one second for synchronization */
+	t.tv_sec++;
+	
+	while(1){
+		/* wait until next shot */
+		clock_nanosleep(0, TIMER_ABSTIME, &t, NULL);
 		
-		/* declaración de variables con el número de bytes de algunas variables */
-		int tsec_bytes = sizeof t.tv_sec;	// tamaño en bytes de t.tv_sec
-		int tnsec_bytes = sizeof t.tv_nsec;	// tamaño en bytes de t.tv_nsec
-		int rpm_bytes = sizeof rpm;		// tamaño en bytes de rpm
-		int uk_bytes = sizeof uk;		// tamaño en bytes de uk
+		/* calcular velocidad a partir del contador del decoder */
+		encoder_cont_k = encoder_cont;		// copiar cuenta del decoder
+		encoder_cont = 0;			// poner a cero cuenta del decoder
+		rpm = encoder_cont_k*TO_RPM;		// cálculo de RPMs
 		
-		/* inicialización de ek1 y uk1 con condiciones iniciales nulas */
-		ek1 = 0.0;
-		uk1 = 0.0;
+		/* calcular señal de error */
+		ek = SP - rpm;
 		
-		/* inicialización de las cuentas del decoder a 0 */
-		encoder_cont = 0;
+		/* calcular señal de control (PID discreto) */
+		uk = B0*ek+B1*ek1-A1*uk1;
 		
-		/* declaración de las variables con el ciclo de trabajo de la PWM */
-		float dc_float;		// ciclo de trabajo en flotante, entre 0 y 1
-		int dc;			// ciclo de trabajo en entero, tanto por millón
-		int dir = 1;		// 0 si uk positivo, 1 si uk negativo
-		
-		/* get current time */
-		clock_gettime(0,&t);
-		
-		/* start after one second for synchronization */
-		t.tv_sec++;
-		
-		while(1){
-			/* wait until next shot */
-			clock_nanosleep(0, TIMER_ABSTIME, &t, NULL);
-			
-			/* calcular velocidad a partir del contador del decoder */
-			encoder_cont_k = encoder_cont;		// copiar cuenta del decoder
-			encoder_cont = 0;			// poner a cero cuenta del decoder
-			rpm = encoder_cont_k*TO_RPM;		// cálculo de RPMs
-			
-			/* calcular señal de error */
-			ek = SP - rpm;
-			
-			/* calcular señal de control (PID discreto) */
-			uk = B0*ek+B1*ek1-A1*uk1;
-			
-			/* aplicar saturación */
-			if (uk > 6.0) {				// si uk > 6 voltios, 6 voltios
-				uk = 6.0;
-			}
-			else if (uk < -6.0) {			// si uk < -6 voltios, -6 voltios
-				uk = -6.0;
-			}
-			
-			/* aplicar zona muerta y configurar dirección de la tensión */
-			if (uk > 0.0 && uk1 < 0.0) {		// zona muerta si uk pasa de negativo a positivo
-				uk_sat_dz = 0.0;
-			}
-			else if (uk < 0.0 && uk1 > 0.0) {	// zona muerta si uk pasa de positivo a negativo
-				uk_sat_dz = 0.0;
-			}
-			else if (uk >= 0.0) {		// uk positivo
-				uk_sat_dz = uk;
-				dir = 1;
-			}
-			else {				// uk negativo
-				uk_sat_dz = -uk;
-				dir = 0;
-			}
-			
-			/* actualizar señal de dirección de PWM */
-			gpioWrite(GPIO_DIR, dir);
-			
-			/* actualizar ciclo de trabajo de la PWM */
-			dc_float = uk_sat_dz / V_DC;		// ciclo de trabajo en tanto por 1
-			dc = (int)(dc_float*1000000.0);		// ciclo de trabajo en tanto por millón
-			gpioHardwarePWM(GPIO_PWM, 2000, dc);	// PWM de 10 kHz en el GPIO_PWM con ciclo de trabajo dc
-			
-			/* registrar señal de control y error */
-			uk1 = uk;
-			ek1 = ek;
-			
-			// Accept an incoming connection from the client
-			int clen = sizeof(client_addr);	// Get number of bytes of client_addr
-			// accept() takes the server socket as an argument and retrieves the first socket connection in the queue,
-			// creates a new socket for communication with client and returns the file descriptor for that socket
-			client_socket = accept(server_socket, (struct sockaddr *) &client_addr, &clen);
-			if (client_socket >= 0) {	// If connection with client has been established
-				// Write to client
-				write(client_socket, &t.tv_sec, tsec_bytes);	// use client socket file descriptor to send t.tv_sec
-				write(client_socket, &t.tv_nsec, tnsec_bytes);	// use client socket file descriptor to send t.tv_nsec
-				write(client_socket, &rpm, rpm_bytes);	// use client socket file descriptor to send rpm
-				write(client_socket, &uk, uk_bytes);	// use client socket file descriptor to send uk
-				// Close socket connection to client
-				close(client_socket);			// use client socket file descriptor
-			}
-			// If connection from client not available, doesn't send data
-			
-			/* calculate next shot */
-			t.tv_nsec+=TS;
-			tsnorm(&t);
+		/* aplicar saturación */
+		if (uk > 6.0) {				// si uk > 6 voltios, 6 voltios
+			uk = 6.0;
 		}
-        return NULL;
+		else if (uk < -6.0) {			// si uk < -6 voltios, -6 voltios
+			uk = -6.0;
+		}
+		
+		/* aplicar zona muerta y configurar dirección de la tensión */
+		if (uk > 0.0 && uk1 < 0.0) {		// zona muerta si uk pasa de negativo a positivo
+			uk_sat_dz = 0.0;
+		}
+		else if (uk < 0.0 && uk1 > 0.0) {	// zona muerta si uk pasa de positivo a negativo
+			uk_sat_dz = 0.0;
+		}
+		else if (uk >= 0.0) {		// uk positivo
+			uk_sat_dz = uk;
+			dir = 1;
+		}
+		else {				// uk negativo
+			uk_sat_dz = -uk;
+			dir = 0;
+		}
+		
+		/* actualizar señal de dirección de PWM */
+		gpioWrite(GPIO_DIR, dir);
+		
+		/* actualizar ciclo de trabajo de la PWM */
+		dc_float = uk_sat_dz / V_DC;		// ciclo de trabajo en tanto por 1
+		dc = (int)(dc_float*1000000.0);		// ciclo de trabajo en tanto por millón
+		gpioHardwarePWM(GPIO_PWM, 2000, dc);	// PWM de 10 kHz en el GPIO_PWM con ciclo de trabajo dc
+		
+		/* registrar señal de control y error */
+		uk1 = uk;
+		ek1 = ek;
+		
+		// Accept an incoming connection from the client
+		int clen = sizeof(client_addr);	// Get number of bytes of client_addr
+		// accept() takes the server socket as an argument and retrieves the first socket connection in the queue,
+		// creates a new socket for communication with client and returns the file descriptor for that socket
+		client_socket = accept(server_socket, (struct sockaddr *) &client_addr, &clen);
+		if (client_socket >= 0) {	// If connection with client has been established
+			// Write to client
+			write(client_socket, &t.tv_sec, tsec_bytes);	// use client socket file descriptor to send t.tv_sec
+			write(client_socket, &t.tv_nsec, tnsec_bytes);	// use client socket file descriptor to send t.tv_nsec
+			write(client_socket, &rpm, rpm_bytes);	// use client socket file descriptor to send rpm
+			write(client_socket, &uk, uk_bytes);	// use client socket file descriptor to send uk
+			// Close socket connection to client
+			close(client_socket);			// use client socket file descriptor
+		}
+		// If connection from client not available, doesn't send data
+		
+		/* calculate next shot */
+		t.tv_nsec+=TS;
+		tsnorm(&t);
+	}
+	return NULL;
 }
 
 /* Hilo 2: adquisición de señal del enconder */
@@ -321,9 +321,9 @@ int gpio_init()
 int main(int argc, char* argv[])
 {	
 	int ret;					// variable para almacenar retorno de funciones
-        struct sched_param param;			// crear una estructura de tipo sched_param para configurar las propiedades relacionadas con el scheduler
-        pthread_attr_t attr;				// crear un objeto de tipo pthread_attr_t para configurar los atributos del hilo
-        pthread_t thread1, thread2;			// crear dos hilos de tipo pthread_t
+    struct sched_param param;			// crear una estructura de tipo sched_param para configurar las propiedades relacionadas con el scheduler
+    pthread_attr_t attr;				// crear un objeto de tipo pthread_attr_t para configurar los atributos del hilo
+    pthread_t thread1, thread2;			// crear dos hilos de tipo pthread_t
 	
 	/* Inicializar y configurar GPIOs */
 	ret = gpio_init();
@@ -353,8 +353,8 @@ int main(int argc, char* argv[])
 	if (ret < 0)
 	{
 		perror("ioctl() failed");
-	      close(server_socket);
-	      return ret;
+	    close(server_socket);
+	    return ret;
 	}
 	
 	// Bind socket to a local address on the machine
@@ -378,70 +378,71 @@ int main(int argc, char* argv[])
 		return ret;
 	}
  
-        /* Initialize pthread attributes (default values) */
-        ret = pthread_attr_init(&attr);		// initializes the thread attributes object pointed to by attr with default attribute values
-        if (ret) {
-                printf("init pthread attributes failed\n");
-                return ret;
-        }
- 
-        /* Set a specific stack size  */
-        ret = pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN);
-        if (ret) {
+	/* Initialize pthread attributes (default values) */
+	ret = pthread_attr_init(&attr);		// initializes the thread attributes object pointed to by attr with default attribute values
+	if (ret) {
+		printf("init pthread attributes failed\n");
+		return ret;
+	}
+
+	/* Set a specific stack size  */
+	ret = pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN);
+	if (ret) {
 		printf("pthread setstacksize failed\n");
 		return ret;
-        }
+	}
  
-        /* Set scheduler policy and priority of pthread */
-        ret = pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
-        if (ret) {
+	/* Set scheduler policy and priority of pthread */
+	ret = pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
+	if (ret) {
 		printf("pthread setschedpolicy failed\n");
-                return ret;
-        }
-        param.sched_priority = 90;
-        ret = pthread_attr_setschedparam(&attr, &param);
-        if (ret) {
-                printf("pthread setschedparam failed\n");
-                return ret;
-        }
-        ret = pthread_attr_getschedparam(&attr, &param);
-		printf("Param %d", param.sched_priority);
-        if (ret) {
-                printf("pthread getschedparam failed\n");
-                return ret;
-        }
-        /* Use scheduling parameters of attr */
-        ret = pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
-        if (ret) {
-                printf("pthread setinheritsched failed\n");
-                return ret;
-        }
+		return ret;
+	}
+	param.sched_priority = 90;
+	ret = pthread_attr_setschedparam(&attr, &param);
+	if (ret) {
+		printf("pthread setschedparam failed\n");
+		return ret;
+	}
+	ret = pthread_attr_getschedparam(&attr, &param);
+	printf("Param %d", param.sched_priority);
+	if (ret) {
+		printf("pthread getschedparam failed\n");
+		return ret;
+	}
+    
+	/* Use scheduling parameters of attr */
+	ret = pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+	if (ret) {
+		printf("pthread setinheritsched failed\n");
+		return ret;
+	}
  
-        /* Create a pthread with specified attributes */
-        ret = pthread_create(&thread1, &attr, thread1_control, NULL);
-        if (ret) {
-                printf("create pthread failed\n");
-                return ret;
-        }
+	/* Create a pthread with specified attributes */
+	ret = pthread_create(&thread1, &attr, thread1_control, NULL);
+	if (ret) {
+		printf("create pthread failed\n");
+		return ret;
+	}
 	
 	/* Create a pthread with specified attributes */
-        ret = pthread_create(&thread2, &attr, thread2_encoder, NULL);
-        if (ret) {
-                printf("create pthread failed\n");
-                return ret;
-        }
+	ret = pthread_create(&thread2, &attr, thread2_encoder, NULL);
+	if (ret) {
+		printf("create pthread failed\n");
+		return ret;
+    }
  
-        /* Join the thread and wait until it is done */
-        ret = pthread_join(thread1, NULL);
-        if (ret) {
-                printf("join pthread failed: %m\n");
+	/* Join the thread and wait until it is done */
+	ret = pthread_join(thread1, NULL);
+	if (ret) {
+		printf("join pthread failed: %m\n");
 		return ret;
 	}
 		
 	/* Join the thread and wait until it is done */
-        ret = pthread_join(thread2, NULL);
-        if (ret) {
-                printf("join pthread failed: %m\n");
+	ret = pthread_join(thread2, NULL);
+	if (ret) {
+		printf("join pthread failed: %m\n");
 	}
  
         return 0;
