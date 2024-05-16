@@ -14,6 +14,8 @@
  * 	  machine that computes a count used to determine the RPMs of the motor.
  */
  
+ // When compiling, -lpigpio option must be used to include pigpio library.
+ 
 #include <limits.h>
 #include <pthread.h>
 #include <sched.h>
@@ -224,7 +226,15 @@ void *thread1_control(void *data)
 			uk = -6.0;
 		}
 		
-		/* apply dead zone and set up voltage polarity */
+		/* apply deadzone if abs(uk) < 0.6 */
+		if (uk > 0.0 && uk < 0.6) {
+			uk = 0.0;
+		}
+		else if (uk < 0.0 && uk > -0.6) {
+			uk = 0.0;
+		}
+		
+		/* apply dead period if polarity changes and set up voltage polarity */
 		if (uk > 0.0 && uk1 < 0.0) {		// dead zone if uk goes from negative to positive
 			uk_sat_dz = 0.0;
 		}
