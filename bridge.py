@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 
-# STILL NEED TO IMPLEMENT AUTOMATIC DESTRUCTION OF PREVIOUSLY OPENED
-# ZMQ SERVICES
+# This program acts as bridge between control_motor (in raspberry) and
+# plot (in PC). It has two threads, that communicate between them with
+# a FIFO. This two threads have normal priority, they are not real-time
+# threads.
+
+# thread3 (UNIX socket client): receives real time data from motor control process (in C, server, thread1)
+# and stores it in a FIFO queue that is afterwards emptied by thread4_zmq_publisher.
+
+# thread4 (ZMQ publisher). This thread gets data from the FIFO queue and
+# sends it to host computer using ZMQ publisher-subscriber paradigm.
 
 from ctypes import *
 import time
@@ -63,7 +71,7 @@ def tsnorm(ts):
 # emptied by thread4_zmq_publisher.
 def thread3_client(data):
     # Set the path for the Unix socket
-    socket_path = './control_socket'
+    socket_path = '/tmp/control_socket'
     
     while True:
         # Create the Unix socket client
@@ -80,8 +88,11 @@ def thread3_client(data):
         uk_rec = client.recv(4)
         uk_float = struct.unpack('f', uk_rec)[0]
         data = [tsec_int, tnsec_int, rpm_float, uk_float]
-        if not(fifo.full()):	# si la FIFO no está llena
-            fifo.put(data)
+        if not(fifo.full()):	# if FIFO not full
+            fifo.put(data)      # push data into FIFO
+        else:                   # if FIFO full
+            fifo.get(data)      # throw out one element
+            fifo.put(data)      # push data into FIFO
         client.close()
 
 # Function associated to thread4 (ZMQ publisher). This thread gets data from the FIFO queue and
@@ -95,11 +106,8 @@ def thread4_zmq_publisher(data):
         if not(fifo.empty()):
             data = fifo.get()
             zmq_socket.send_string(','.join(map(str,data)))
-            #print(data[0])
-            #print(data[1])
-            #print(f'RPM: ', data[2])
-            #print(f'uk : ', data[3])
 
+# Main program (issues thread3 and thread4)
 def main():
  
     # Create a pthread with default attributes and parameters (non-RT)
