@@ -75,7 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Plot initial values
         pen1 = pg.mkPen(color=(255, 0, 0))
-        pen2 = pg.mkPen(color=(0, 255, 0))
+        pen2 = pg.mkPen(color=(0, 0, 255))
         self.data_line1 = self.plot1.plot(self.t_list, self.rpm_list, pen=pen1)
         self.data_line2 = self.plot2.plot(self.t_list, self.uk_list, pen=pen2)
         
